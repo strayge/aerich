@@ -130,7 +130,7 @@ class Migrate:
         return version
 
     @classmethod
-    async def migrate(cls, name) -> str:
+    async def migrate(cls, name, dry_run=False) -> str:
         """
         diff old models and new models to generate diff content
         :param name:
@@ -144,6 +144,9 @@ class Migrate:
 
         if not cls.upgrade_operators:
             return ""
+
+        if dry_run and cls.upgrade_operators:
+            return "new migrations"
 
         return await cls._generate_diff_py(name)
 
