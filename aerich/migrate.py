@@ -12,6 +12,9 @@ from tortoise.exceptions import OperationalError
 from tortoise.indexes import Index
 
 from aerich.ddl import BaseDDL
+from aerich.inspectdb.mysql import InspectMySQL
+from aerich.inspectdb.postgres import InspectPostgres
+from aerich.inspectdb.sqlite import InspectSQLite
 from aerich.models import MAX_VERSION_LENGTH, Aerich
 from aerich.utils import get_app_connection, get_models_describe, is_default_function
 
@@ -137,8 +140,22 @@ class Migrate:
         :return:
         """
         new_version_content = get_models_describe(cls.app)
-        cls.diff_models(cls._last_version_content, new_version_content)
-        cls.diff_models(new_version_content, cls._last_version_content, False)
+
+        if cls.dialect == "mysql":
+            inspect_cls = InspectMySQL
+        elif cls.dialect == "postgres":
+            inspect_cls = InspectPostgres
+        elif cls.dialect == "sqlite":
+            inspect_cls = InspectSQLite
+        inspect = inspect_cls(conn=cls.ddl.client, tables=None)
+
+        class_names = {}
+        for class_name in new_version_content.keys():
+            class_names[new_version_content[class_name]["table"]] = class_name
+        db_content = await inspect.describe(app=cls.app, class_names=class_names)
+
+        cls.diff_models(db_content, new_version_content)
+        cls.diff_models(new_version_content, db_content, False)
 
         cls._merge_operators()
 
@@ -297,6 +314,12 @@ class Migrate:
                         new_model_describe.get("data_fields"),
                     )
                 )
+
+                # replace auto_now with auto_now_add as it is the same in db
+                for data_field in new_data_fields:
+                    if data_field.get("auto_now") is True:
+                        data_field["auto_now"] = False
+                        data_field["auto_now_add"] = True
 
                 old_data_fields_name = list(map(lambda x: x.get("name"), old_data_fields))
                 new_data_fields_name = list(map(lambda x: x.get("name"), new_data_fields))
@@ -489,6 +512,9 @@ class Migrate:
                         elif option == "nullable":
                             # change nullable
                             cls._add_operator(cls._alter_null(model, new_data_field), upgrade)
+                        elif option == "description":
+                            # change comment
+                            cls._add_operator(cls._set_comment(model, new_data_field), upgrade)
                         else:
                             if modified:
                                 continue

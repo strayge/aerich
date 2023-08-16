@@ -41,6 +41,11 @@ class InspectSQLite(Inspect):
                     pk=row["pk"] == 1,
                     unique=columns_index.get(row["name"]) == "unique",
                     index=columns_index.get(row["name"]) == "index",
+                    comment=None,
+                    extra=None,
+                    decimal_places=0,
+                    max_digits=0,
+                    fk=False,
                 )
             )
         return columns

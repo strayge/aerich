@@ -65,6 +65,7 @@ where c.TABLE_SCHEMA = %s
                     length=row["CHARACTER_MAXIMUM_LENGTH"],
                     max_digits=row["NUMERIC_PRECISION"],
                     decimal_places=row["NUMERIC_SCALE"],
+                    fk=False,
                 )
             )
         return columns
