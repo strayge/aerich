@@ -329,6 +329,11 @@ class Migrate:
                         data_field["auto_now"] = False
                         data_field["auto_now_add"] = True
 
+                # escape endline in description to be compatible with get_schema_sql
+                for data_field in new_data_fields:
+                    if data_field.get("description"):
+                        data_field["description"] = data_field["description"].replace("\n", "\\n")
+
                 old_data_fields_name = list(map(lambda x: x.get("name"), old_data_fields))
                 new_data_fields_name = list(map(lambda x: x.get("name"), new_data_fields))
 
