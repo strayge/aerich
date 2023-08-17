@@ -163,6 +163,14 @@ class Migrate:
             return ""
 
         if dry_run and cls.upgrade_operators:
+            if cls.upgrade_operators:
+                click.secho("-- UPGRADE --", fg="green")
+                for operator in cls.upgrade_operators:
+                    click.echo(operator + ";")
+            if cls.downgrade_operators:
+                click.secho("-- DOWNGRADE --", fg="green")
+                for operator in cls.downgrade_operators:
+                    click.echo(operator + ";")
             return "new migrations"
 
         return await cls._generate_diff_py(name)
