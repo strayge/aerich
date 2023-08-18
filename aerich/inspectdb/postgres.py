@@ -40,22 +40,41 @@ class InspectPostgres(Inspect):
 
     async def get_columns(self, table: str) -> List[Column]:
         columns = []
-        sql = f"""select c.column_name,
-       col_description('public.{table}'::regclass, ordinal_position) as column_comment,
-       t.constraint_type as column_key,
-       udt_name as data_type,
-       is_nullable,
-       column_default,
-       character_maximum_length,
-       numeric_precision,
-       numeric_scale
-from information_schema.constraint_column_usage const
-         join information_schema.table_constraints t
-              using (table_catalog, table_schema, table_name, constraint_catalog, constraint_schema, constraint_name)
-         right join information_schema.columns c using (column_name, table_catalog, table_schema, table_name)
-where c.table_catalog = $1
-  and c.table_name = $2
-  and c.table_schema = $3"""
+        sql = """SELECT
+                    c.column_name,
+                    col_description(($3 || '.' || $2)::regclass, c.ordinal_position) AS column_comment,
+                    tc.constraint_type AS column_key,
+                    tc.constraint_name,
+                    ccu.table_name AS ref_table_name,
+                    ccu.column_name AS ref_column_name,
+                    udt_name AS data_type,
+                    is_nullable,
+                    column_default,
+                    character_maximum_length,
+                    numeric_precision,
+                    numeric_scale,
+                    idx.index_name AS index_name
+                FROM information_schema.key_column_usage const
+                    JOIN information_schema.table_constraints tc
+                        USING (table_catalog, table_schema, table_name, constraint_catalog, constraint_schema, constraint_name)
+                    RIGHT JOIN information_schema.columns c USING (column_name, table_catalog, table_schema, table_name)
+                    LEFT JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name
+                    LEFT JOIN (
+                        SELECT
+                            pi.indrelid::regclass AS table_name,
+                            pcl.relname AS index_name,
+                            pa.attname AS column_name,
+                            pa.attnum AS column_number,
+                            co.conname AS constraint_name
+                        FROM pg_index pi
+                        JOIN pg_class pcl ON pcl.oid = pi.indexrelid
+                        JOIN pg_attribute pa ON pa.attnum = ANY(pi.indkey) AND pa.attrelid = pi.indrelid
+                        LEFT JOIN pg_constraint co ON co.conindid = pi.indexrelid
+                        WHERE co.conname IS NULL
+                    ) idx ON (idx.table_name::varchar = c.table_name AND idx.column_name = c.column_name)
+                WHERE c.table_catalog = $1
+                AND c.table_name = $2
+                AND c.table_schema = $3"""
         ret = await self.conn.execute_query_dict(sql, [self.database, table, self.schema])
         for row in ret:
             columns.append(
@@ -69,8 +88,9 @@ where c.table_catalog = $1
                     decimal_places=row["numeric_scale"],
                     comment=row["column_comment"],
                     pk=row["column_key"] == "PRIMARY KEY",
-                    unique=False,  # can't get this simply
-                    index=False,  # can't get this simply
+                    unique=row["column_key"] == "UNIQUE",
+                    index=row["index_name"] is not None,
+                    extra=None,
                 )
             )
         return columns
