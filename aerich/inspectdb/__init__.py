@@ -112,10 +112,10 @@ class Column(BaseModel):
         elif self.auto_now_add:
             kwargs["auto_now_add"] = True
 
-        is_enum = self.comment and "\n" in self.comment
+        is_enum = self.comment and "\\n" in self.comment
         if is_enum:
             options = {}
-            for line in self.comment.split("\n"):
+            for line in self.comment.split("\\n"):
                 name, value = line.split(": ", 1)
                 options[name] = value
             kwargs["enum_type"] = Enum("CharEnum", options)
