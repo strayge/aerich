@@ -130,7 +130,24 @@ class Migrate:
         return version
 
     @classmethod
-    async def migrate(cls, name) -> str:
+    async def _check_same_migration_exists(cls):
+        migration_content = MIGRATE_TEMPLATE.format(
+            upgrade_sql=";\n        ".join(cls.upgrade_operators) + ";",
+            downgrade_sql=";\n        ".join(cls.downgrade_operators) + ";",
+        )
+        version_number = await cls.generate_version()
+        for filename in cls.get_all_version_files():
+            if filename.startswith(version_number.split("_")[0]):
+                file_content = Path(cls.migrate_location, filename).read_text(encoding="utf-8")
+                if (
+                    sorted(file_content.replace('"""', '').strip().splitlines())
+                    == sorted(migration_content.replace('"""', '').strip().splitlines())
+                ):
+                    return True
+        return False
+
+    @classmethod
+    async def migrate(cls, name, dry_run=False, silent=False) -> str:
         """
         diff old models and new models to generate diff content
         :param name:
@@ -144,6 +161,20 @@ class Migrate:
 
         if not cls.upgrade_operators:
             return ""
+
+        if dry_run and cls.upgrade_operators and await cls._check_same_migration_exists():
+            return ""
+
+        if dry_run and cls.upgrade_operators:
+            if not silent and cls.upgrade_operators:
+                click.secho("-- UPGRADE --", fg="green")
+                for operator in cls.upgrade_operators:
+                    click.echo(operator + ";")
+            if not silent and cls.downgrade_operators:
+                click.secho("-- DOWNGRADE --", fg="green")
+                for operator in cls.downgrade_operators:
+                    click.echo(operator + ";")
+            return "new migrations"
 
         return await cls._generate_diff_py(name)
 

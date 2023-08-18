@@ -7,7 +7,7 @@ from tortoise.exceptions import OperationalError
 from tortoise.transactions import in_transaction
 from tortoise.utils import get_schema_sql
 
-from aerich.exceptions import DowngradeError
+from aerich.exceptions import DowngradeError, UpgradeError
 from aerich.inspectdb.mysql import InspectMySQL
 from aerich.inspectdb.postgres import InspectPostgres
 from aerich.inspectdb.sqlite import InspectSQLite
@@ -48,6 +48,11 @@ class Command:
         )
 
     async def upgrade(self, run_in_transaction: bool = True):
+        if Migrate._last_version_content and await Migrate.migrate(
+            name="", dry_run=True, silent=True
+        ):
+            raise UpgradeError("Changes in models detected, run migrate first")
+
         migrated = []
         for version_file in Migrate.get_all_version_files():
             try:
@@ -123,8 +128,8 @@ class Command:
         inspect = cls(connection, tables)
         return await inspect.inspect()
 
-    async def migrate(self, name: str = "update"):
-        return await Migrate.migrate(name)
+    async def migrate(self, name: str = "update", dry_run: bool = False):
+        return await Migrate.migrate(name, dry_run=dry_run)
 
     async def init_db(self, safe: bool):
         location = self.location

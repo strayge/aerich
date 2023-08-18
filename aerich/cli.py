@@ -12,7 +12,7 @@ from tortoise import Tortoise
 
 from aerich import Command
 from aerich.enums import Color
-from aerich.exceptions import DowngradeError
+from aerich.exceptions import DowngradeError, UpgradeError
 from aerich.utils import add_src_path, get_tortoise_config
 from aerich.version import __version__
 
@@ -79,14 +79,20 @@ async def cli(ctx: Context, config, app):
 
 @cli.command(help="Generate migrate changes file.")
 @click.option("--name", default="update", show_default=True, help="Migrate name.")
+@click.option(
+    "--dry-run", is_flag=True, default=False, type=bool, help="Only check for new changes."
+)
 @click.pass_context
 @coro
-async def migrate(ctx: Context, name):
+async def migrate(ctx: Context, name, dry_run):
     command = ctx.obj["command"]
-    ret = await command.migrate(name)
+    ret = await command.migrate(name, dry_run=dry_run)
     if not ret:
         return click.secho("No changes detected", fg=Color.yellow)
-    click.secho(f"Success migrate {ret}", fg=Color.green)
+    if dry_run:
+        click.secho("New changes detected", fg=Color.green)
+    else:
+        click.secho(f"Success migrate {ret}", fg=Color.green)
 
 
 @cli.command(help="Upgrade to specified version.")
@@ -101,7 +107,10 @@ async def migrate(ctx: Context, name):
 @coro
 async def upgrade(ctx: Context, in_transaction: bool):
     command = ctx.obj["command"]
-    migrated = await command.upgrade(run_in_transaction=in_transaction)
+    try:
+        migrated = await command.upgrade(run_in_transaction=in_transaction)
+    except UpgradeError as e:
+        return click.secho(str(e), fg=Color.yellow)
     if not migrated:
         click.secho("No upgrade items found", fg=Color.yellow)
     else:
