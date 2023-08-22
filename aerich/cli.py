@@ -1,5 +1,6 @@
 import asyncio
 import os
+from contextlib import suppress
 from functools import wraps
 from pathlib import Path
 from typing import List
@@ -9,6 +10,7 @@ import tomlkit
 from click import Context, UsageError
 from tomlkit.exceptions import NonExistentKey
 from tortoise import Tortoise
+from tortoise.exceptions import ConfigurationError
 
 from aerich import Command
 from aerich.enums import Color
@@ -31,7 +33,8 @@ def coro(f):
             loop.run_until_complete(f(*args, **kwargs))
         finally:
             if f.__name__ not in ["cli", "init"]:
-                loop.run_until_complete(Tortoise.close_connections())
+                with suppress(ConfigurationError):
+                    loop.run_until_complete(Tortoise.close_connections())
 
     return wrapper
 
