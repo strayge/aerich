@@ -1,4 +1,5 @@
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import List
 
@@ -13,6 +14,7 @@ from aerich.inspectdb.postgres import InspectPostgres
 from aerich.inspectdb.sqlite import InspectSQLite
 from aerich.migrate import MIGRATE_TEMPLATE, Migrate
 from aerich.models import Aerich
+from aerich.operations import read_operations
 from aerich.utils import (
     get_app_connection,
     get_app_connection_name,
@@ -38,31 +40,35 @@ class Command:
 
     async def _upgrade(self, conn, version_file):
         file_path = Path(Migrate.migrate_location, version_file)
-        m = import_py_file(file_path)
-        upgrade = getattr(m, "upgrade")
-        await conn.execute_script(await upgrade(conn))
+        upgrade_operations, _ = read_operations(file_path)
+        for operation in upgrade_operations:
+            sql = await operation.to_sql()
+            print(sql)
+            await conn.execute_script(sql)
+        # m = import_py_file(file_path)
+        # upgrade = getattr(m, "upgrade")
+        # await conn.execute_script(await upgrade(conn))
         await Aerich.create(
             version=version_file,
             app=self.app,
-            content=get_models_describe(self.app),
+            # content=get_models_describe(self.app),
         )
 
     async def upgrade(self, run_in_transaction: bool = True):
         migrated = []
         for version_file in Migrate.get_all_version_files():
-            try:
-                exists = await Aerich.exists(version=version_file, app=self.app)
-            except OperationalError:
-                exists = False
-            if not exists:
+            with suppress(OperationalError):
+                if await Aerich.exists(version=version_file, app=self.app):
+                    continue
+            if run_in_transaction:
                 app_conn_name = get_app_connection_name(self.tortoise_config, self.app)
-                if run_in_transaction:
-                    async with in_transaction(app_conn_name) as conn:
-                        await self._upgrade(conn, version_file)
-                else:
-                    app_conn = get_app_connection(self.tortoise_config, self.app)
+                print(f"{self.app=}")
+                async with in_transaction(app_conn_name) as app_conn:
                     await self._upgrade(app_conn, version_file)
-                migrated.append(version_file)
+            else:
+                app_conn = get_app_connection(self.tortoise_config, self.app)
+                await self._upgrade(app_conn, version_file)
+            migrated.append(version_file)
         return migrated
 
     async def downgrade(self, version: int, delete: bool):
@@ -133,18 +139,23 @@ class Command:
         dirname.mkdir(parents=True)
 
         await Tortoise.init(config=self.tortoise_config)
-        connection = get_app_connection(self.tortoise_config, app)
-        await generate_schema_for_client(connection, safe)
 
-        schema = get_schema_sql(connection, safe)
+        await self.init()
+        await self.migrate("init")
+        await self.upgrade()
 
-        version = await Migrate.generate_version()
-        await Aerich.create(
-            version=version,
-            app=app,
-            content=get_models_describe(app),
-        )
-        version_file = Path(dirname, version)
-        content = MIGRATE_TEMPLATE.format(upgrade_sql=schema, downgrade_sql="")
-        with open(version_file, "w", encoding="utf-8") as f:
-            f.write(content)
+        # connection = get_app_connection(self.tortoise_config, app)
+        # await generate_schema_for_client(connection, safe)
+
+        # schema = get_schema_sql(connection, safe)
+
+        # version = await Migrate.generate_version()
+        # await Aerich.create(
+        #     version=version,
+        #     app=app,
+        #     content=get_models_describe(app),
+        # )
+        # version_file = Path(dirname, version)
+        # content = MIGRATE_TEMPLATE.format(upgrade_sql=schema, downgrade_sql="")
+        # with open(version_file, "w", encoding="utf-8") as f:
+        #     f.write(content)

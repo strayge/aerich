@@ -1,0 +1,15 @@
+services:
+    postgres:
+        image: postgres:12.13-alpine
+        environment:
+          POSTGRES_PASSWORD: 123456
+          POSTGRES_USER: postgres
+        ports:
+            - 5432:5432
+
+    mysql:
+        image: mysql:8.1.0
+        environment:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+            - 3306:3306

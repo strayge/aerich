@@ -3,9 +3,10 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from click import BadOptionUsage, ClickException, Context
+from pydantic import BaseModel, Field
 from tortoise import BaseDBAsyncClient, Tortoise
 
 
@@ -77,7 +78,71 @@ def get_tortoise_config(ctx: Context, tortoise_orm: str) -> dict:
     return config
 
 
-def get_models_describe(app: str) -> Dict:
+class TortoiseFieldDescribe(BaseModel):
+    name: str
+    field_type: str
+    db_column: str
+    python_type: str
+    generated: bool = False
+    nullable: bool = False
+    unique: bool = False
+    indexed: bool = False
+    default: Optional[Union[str, bool, int, float]]  # "<function tests.models.default_name>",
+    description: Optional[str] = None
+    docstring: Optional[str] = None
+    constraints: Dict[str, Any] = Field(default_factory=dict)  # "ge": 1, "le": 2147483647, "max_length": 200, "readOnly": true
+    db_field_types: Dict[str, str]
+    #      "": "INT"
+    #      "": "VARCHAR(200)"
+    #      "": "TIMESTAMP",
+    #      "mssql": "DATETIME2",
+    #      "mysql": "DATETIME(6)",
+    #      "oracle": "TIMESTAMP WITH TIME ZONE",
+    #      "postgres": "TIMESTAMPTZ"
+    auto_now_add: Optional[bool] = None
+    auto_now: Optional[bool] = None
+
+
+class TortoiseFkDescribe(TortoiseFieldDescribe):
+    db_column: None = None
+    db_field_types: None = None
+    db_constraint: bool
+    raw_field: str
+    on_delete: Literal["CASCADE", "RESTRICT", "SET_NULL", "DO_NOTHING"]
+
+
+class TortoiseM2MDescribe(TortoiseFieldDescribe):
+    db_column: None = None
+    db_field_types: None = None
+    db_constraint: bool
+    model_name: str
+    related_name: str
+    forward_key: str
+    backward_key: str
+    through: str
+    on_delete: Literal["CASCADE", "RESTRICT", "SET_NULL", "DO_NOTHING"]
+    _generated: bool
+
+
+class TortoiseTableDescribe(BaseModel):
+    name: str
+    app: str
+    table: str
+    pk_field: TortoiseFieldDescribe
+    abstract: bool = False
+    description: Optional[str] = None
+    docstring: Optional[str] = None
+    unique_together: List[Tuple[str, ...]] = Field(default_factory=list)
+    indexes: List[Tuple[str, ...]] = Field(default_factory=list)
+    data_fields: List[TortoiseFieldDescribe] = Field(default_factory=list)
+    fk_fields: List[TortoiseFkDescribe] = Field(default_factory=list)
+    backward_fk_fields: list = Field(default_factory=list)
+    o2o_fields: list = Field(default_factory=list)
+    backward_o2o_fields: list = Field(default_factory=list)
+    m2m_fields: List[TortoiseM2MDescribe] = Field(default_factory=list)
+
+
+def get_models_describe(app: str) -> Dict[str, TortoiseTableDescribe]:
     """
     get app models describe
     :param app:
@@ -86,7 +151,8 @@ def get_models_describe(app: str) -> Dict:
     ret = {}
     for model in Tortoise.apps.get(app).values():
         describe = model.describe()
-        ret[describe.get("name")] = describe
+        model_describe = TortoiseTableDescribe(**describe)
+        ret[model_describe.table] = model_describe
     return ret
 
 
