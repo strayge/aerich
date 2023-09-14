@@ -1,3 +1,4 @@
+from enum import Enum
 import importlib.util
 import os
 import re
@@ -78,6 +79,13 @@ def get_tortoise_config(ctx: Context, tortoise_orm: str) -> dict:
     return config
 
 
+class OnDelete(str, Enum):
+    CASCADE = 'CASCADE'
+    RESTRICT = 'RESTRICT'
+    SET_NULL = 'SET_NULL'
+    DO_NOTHING = 'SET_DEFAULT'
+
+
 class TortoiseFieldDescribe(BaseModel):
     name: str
     field_type: str
@@ -91,14 +99,7 @@ class TortoiseFieldDescribe(BaseModel):
     description: Optional[str] = None
     docstring: Optional[str] = None
     constraints: Dict[str, Any] = Field(default_factory=dict)  # "ge": 1, "le": 2147483647, "max_length": 200, "readOnly": true
-    db_field_types: Dict[str, str]
-    #      "": "INT"
-    #      "": "VARCHAR(200)"
-    #      "": "TIMESTAMP",
-    #      "mssql": "DATETIME2",
-    #      "mysql": "DATETIME(6)",
-    #      "oracle": "TIMESTAMP WITH TIME ZONE",
-    #      "postgres": "TIMESTAMPTZ"
+    db_field_types: Dict[str, str] = Field(default_factory=dict)
     auto_now_add: Optional[bool] = None
     auto_now: Optional[bool] = None
 
@@ -106,9 +107,9 @@ class TortoiseFieldDescribe(BaseModel):
 class TortoiseFkDescribe(TortoiseFieldDescribe):
     db_column: None = None
     db_field_types: None = None
-    db_constraint: bool
     raw_field: str
-    on_delete: Literal["CASCADE", "RESTRICT", "SET_NULL", "DO_NOTHING"]
+    db_constraint: bool = True
+    on_delete: OnDelete = OnDelete.CASCADE
 
 
 class TortoiseM2MDescribe(TortoiseFieldDescribe):
@@ -120,7 +121,7 @@ class TortoiseM2MDescribe(TortoiseFieldDescribe):
     forward_key: str
     backward_key: str
     through: str
-    on_delete: Literal["CASCADE", "RESTRICT", "SET_NULL", "DO_NOTHING"]
+    on_delete: OnDelete
     _generated: bool
 
 
@@ -140,6 +141,14 @@ class TortoiseTableDescribe(BaseModel):
     o2o_fields: list = Field(default_factory=list)
     backward_o2o_fields: list = Field(default_factory=list)
     m2m_fields: List[TortoiseM2MDescribe] = Field(default_factory=list)
+
+    def get_db_column_name(self, name: str) -> str:
+        if self.pk_field.name == name:
+            return self.pk_field.db_column
+        for field in self.data_fields:
+            if field.name == name:
+                return field.db_column
+        return name
 
 
 def get_models_describe(app: str) -> Dict[str, TortoiseTableDescribe]:

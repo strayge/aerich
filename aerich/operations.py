@@ -1,11 +1,11 @@
 import json
 from hashlib import sha256
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pydantic import BaseModel
 
-from aerich.utils import TortoiseFieldDescribe, TortoiseTableDescribe
+from aerich.utils import OnDelete, TortoiseFieldDescribe, TortoiseFkDescribe, TortoiseTableDescribe
 
 
 def _generate_index_name(unique: bool, table_name: str, field_names: List[str]) -> str:
@@ -65,9 +65,11 @@ class RenameTable(Operation):
 class AddTable(Operation):
     table_name: str
     fields: list['AddField']
+    fk_fields: list['AddFK']
 
     async def to_sql(self) -> str:
-        fields_sql = ", ".join(field.create_table_column_sql() for field in self.fields)
+        fields = self.fields + self.fk_fields
+        fields_sql = ", ".join(field.create_table_column_sql() for field in fields)
         return f"CREATE TABLE {self.table_name} ({fields_sql})"
 
 
@@ -176,11 +178,70 @@ class SetComment(Operation):
 
 
 class AddFK(Operation):
-    ...
+    table_name: str
+    field_name: str
+    on_delete: OnDelete
+    related_model_name: str
+    related_field_name: str
+    nullable: bool = False
+    unique: bool = False
+    default: Optional[Union[str, bool, int, float]] = None
+    comment: Optional[str] = None
+
+    def create_table_column_sql(self) -> str:
+        sql = f"FOREIGN KEY ({self.field_name}) REFERENCES {self.related_model_name} ({self.related_field_name})"
+        sql += f" ON DELETE {self.on_delete.value}"
+        return sql
+
+    async def to_sql(self) -> str:
+        return f"ALTER TABLE {self.table_name} ADD {self.create_table_column_sql()}"
 
 
 class DropFK(Operation):
-    ...
+    table_name: str
+    field_name: str
+
+    async def to_sql(self) -> str:
+        return f"ALTER TABLE {self.table_name} DROP FOREIGN KEY {self.field_name}"
+
+
+def _remove_field_by_db_column(
+    fields: Union[List[TortoiseFieldDescribe], List[TortoiseFkDescribe]],
+    db_column: str,
+) -> None:
+    for i, field in enumerate(fields):
+        if field.db_column == db_column:
+            del fields[i]
+            break
+
+
+def _convert_into_tortoise_field(field: AddField) -> TortoiseFieldDescribe:
+    return TortoiseFieldDescribe(
+        name=field.field_name,
+        field_type=field.field_type,
+        db_column=field.field_name,
+        python_type="",
+        db_field_types={},
+        nullable=field.nullable,
+        unique=field.unique,
+        default=field.default,
+        description=field.comment,
+    )
+
+
+def _convert_into_tortoise_fk_field(field: AddFK) -> TortoiseFkDescribe:
+    return TortoiseFkDescribe(
+        name=field.field_name,
+        field_type="",
+        python_type="",
+        nullable=field.nullable,
+        unique=field.unique,
+        default=field.default,
+        description=field.related_model_name,
+        db_constraint=True,
+        raw_field=field.related_field_name,
+        on_delete=field.on_delete,
+    )
 
 
 def make_model(operations: list[Operation]) -> Dict[str, TortoiseTableDescribe]:
@@ -192,29 +253,11 @@ def make_model(operations: list[Operation]) -> Dict[str, TortoiseTableDescribe]:
             data_fields = []
             for field in operation.fields:
                 if field.primary:
-                    pk_field = TortoiseFieldDescribe(
-                        name="",
-                        field_type=field.field_type,
-                        db_column=field.field_name,
-                        python_type="",
-                        db_field_types={},
-                        nullable=field.nullable,
-                        unique=field.unique,
-                        default=field.default,
-                        description=field.comment,
-                    )
+                    pk_field = _convert_into_tortoise_field(field)
                 else:
-                    data_fields.append(TortoiseFieldDescribe(
-                        name="",
-                        field_type=field.field_type,
-                        db_column=field.field_name,
-                        python_type="",
-                        db_field_types={},
-                        nullable=field.nullable,
-                        unique=field.unique,
-                        default=field.default,
-                        description=field.comment,
-                    ))
+                    data_fields.append(_convert_into_tortoise_field(field))
+            for field in operation.fk_fields:
+                data_fields.append(_convert_into_tortoise_fk_field(field))
             tables[operation.table_name] = TortoiseTableDescribe(
                 name=operation.table_name,
                 app="",
@@ -228,17 +271,7 @@ def make_model(operations: list[Operation]) -> Dict[str, TortoiseTableDescribe]:
             tables[operation.new_name] = tables[operation.old_name]
             del tables[operation.old_name]
         elif isinstance(operation, AddField):
-            field = TortoiseFieldDescribe(
-                name="",
-                field_type=operation.field_type,
-                db_column=operation.field_name,
-                python_type="",
-                db_field_types={},
-                nullable=operation.nullable,
-                unique=operation.unique,
-                default=operation.default,
-                description=operation.comment,
-            )
+            field = _convert_into_tortoise_field(operation)
             if operation.primary:
                 tables[operation.table_name].pk_field = field
             else:
@@ -247,10 +280,7 @@ def make_model(operations: list[Operation]) -> Dict[str, TortoiseTableDescribe]:
             if operation.field_name == tables[operation.table_name].pk_field.db_column:
                 tables[operation.table_name].pk_field = None
             else:
-                tables[operation.table_name].data_fields = [
-                    f for f in tables[operation.table_name].data_fields
-                    if f.db_column != operation.field_name
-                ]
+                _remove_field_by_db_column(tables[operation.table_name].data_fields, operation.field_name)
         elif isinstance(operation, RenameField):
             if operation.old_field_name == tables[operation.table_name].pk_field.db_column:
                 tables[operation.table_name].pk_field.db_column = operation.new_field_name
@@ -266,6 +296,10 @@ def make_model(operations: list[Operation]) -> Dict[str, TortoiseTableDescribe]:
                 u for u in tables[operation.table_name].unique_together
                 if u != operation.field_names
             ]
+        elif isinstance(operation, AddFK):
+            tables[operation.table_name].fk_fields.append(_convert_into_tortoise_fk_field(operation))
+        elif isinstance(operation, DropFK):
+            _remove_field_by_db_column(tables[operation.table_name].fk_fields, operation.field_name)
     return tables
 
 
@@ -274,6 +308,8 @@ def compare_models(
     new_model: Dict[str, TortoiseTableDescribe],
 ) -> tuple[list[Operation], list[Operation]]:
     """Compare old model and new model, return upgrade & downgrade operations."""
+    print('new_model', new_model)
+
     upgrade_operations = []
     downgrade_operations = []
 
@@ -308,6 +344,23 @@ def convert_tortoise_field(table_name: str, field: TortoiseFieldDescribe, primar
     )
 
 
+def convert_tortoise_fk(table_name: str, field: TortoiseFkDescribe) -> AddFK:
+    default = field.default
+    if isinstance(default, str) and default.startswith("<function "):
+        default = None
+    return AddFK(
+        table_name=table_name,
+        field_name=field.raw_field,
+        on_delete=field.on_delete,
+        related_model_name=field.python_type.split('.')[-1],
+        related_field_name=field.raw_field,
+        nullable=field.nullable,
+        unique=field.unique,
+        default=default,
+        comment=field.description,
+    )
+
+
 def compare_tables(
     old_table: Optional[TortoiseTableDescribe],
     new_table: Optional[TortoiseTableDescribe],
@@ -316,9 +369,10 @@ def compare_tables(
     downgrade_operations = []
 
     if not old_table and not new_table:
-        pass
+        return upgrade_operations, downgrade_operations
 
-    elif not old_table and new_table:
+    # fields
+    if not old_table and new_table:
         print(f'new table: {new_table.table}')
         upgrade_operations.append(AddTable(
             table_name=new_table.table,
@@ -326,24 +380,11 @@ def compare_tables(
                 [convert_tortoise_field(new_table.table, new_table.pk_field, primary=True)]
                 + [convert_tortoise_field(new_table.table, f) for f in new_table.data_fields]
             ),
+            fk_fields=[convert_tortoise_fk(new_table.table, f) for f in new_table.fk_fields],
         ))
         downgrade_operations.append(DropTable(table_name=new_table.table))
 
-        for new_unique in new_table.unique_together:
-            print(f'new unique: {new_unique}')
-            upgrade_operations.append(AddIndex(
-                table_name=new_table.table,
-                field_names=new_unique,
-                unique=True,
-            ))
-            downgrade_operations.append(DropIndex(
-                table_name=new_table.table,
-                field_names=new_unique,
-                unique=True,
-            ))
-
-
-    elif old_table and not new_table:
+    if old_table and not new_table:
         print(f'removed table: {old_table.table}')
         upgrade_operations.append(DropTable(table_name=old_table.table))
         downgrade_operations.append(AddTable(
@@ -352,22 +393,10 @@ def compare_tables(
                 [convert_tortoise_field(old_table.table, old_table.pk_field, primary=True)]
                 + [convert_tortoise_field(old_table.table, f) for f in old_table.data_fields]
             ),
+            fk_fields=[convert_tortoise_fk(old_table.table, f) for f in old_table.fk_fields],
         ))
 
-        for old_unique in old_table.unique_together:
-            print(f'removed unique: {old_unique}')
-            upgrade_operations.append(DropIndex(
-                table_name=old_table.table,
-                field_names=old_unique,
-                unique=True,
-            ))
-            downgrade_operations.append(AddIndex(
-                table_name=old_table.table,
-                field_names=old_unique,
-                unique=True,
-            ))
-
-    else:
+    if old_table and new_table:
         print(f'same table: {new_table.table}')
         fields_old = {field.db_column: field for field in [old_table.pk_field] + old_table.data_fields}
         fields_new = {field.db_column: field for field in [new_table.pk_field] + new_table.data_fields}
@@ -375,33 +404,93 @@ def compare_tables(
             up_ops, down_ops = compare_fields(new_table.table, fields_old.get(db_column), fields_new.get(db_column))
             upgrade_operations.extend(up_ops)
             downgrade_operations.extend(down_ops)
+        fk_fields_old = {field.raw_field: field for field in old_table.fk_fields}
+        fk_fields_new = {field.raw_field: field for field in new_table.fk_fields}
+        for raw_field in fk_fields_old.keys() | fk_fields_new.keys():
+            up_ops, down_ops = compare_fk_fields(new_table.table, fk_fields_old.get(raw_field), fk_fields_new.get(raw_field))
+            upgrade_operations.extend(up_ops)
+            downgrade_operations.extend(down_ops)
 
-        for new_unique in set(new_table.unique_together) - set(old_table.unique_together):
-            print(f'new unique: {new_unique}')
-            upgrade_operations.append(AddIndex(
+    # unique_together
+    new_table_unique = set()
+    if new_table:
+        for unique in new_table.unique_together:
+            new_table_unique.add(tuple([new_table.get_db_column_name(name) for name in unique]))
+    old_table_unique = set()
+    if old_table:
+        for unique in old_table.unique_together:
+            old_table_unique.add(tuple([old_table.get_db_column_name(name) for name in unique]))
+
+    for new_unique in new_table_unique - old_table_unique:
+        print(f'new unique: {new_unique}')
+        upgrade_operations.append(AddIndex(
+            table_name=new_table.table,
+            field_names=new_unique,
+            unique=True,
+        ))
+        downgrade_operations.append(DropIndex(
+            table_name=new_table.table,
+            field_names=new_unique,
+            unique=True,
+        ))
+    for old_unique in old_table_unique - new_table_unique:
+        print(f'removed unique: {old_unique}')
+        upgrade_operations.append(DropIndex(
+            table_name=new_table.table,
+            field_names=old_unique,
+            unique=True,
+        ))
+        downgrade_operations.append(AddIndex(
+            table_name=new_table.table,
+            field_names=old_unique,
+            unique=True,
+        ))
+
+    # fk
+    if old_table and new_table:
+        new_fk_fields = set()
+        for fk in new_table.fk_fields:
+            new_fk_fields.add(convert_tortoise_fk(new_table.table, fk))
+        old_fk_fields = set()
+        for fk in old_table.fk_fields:
+            old_fk_fields.add(convert_tortoise_fk(old_table.table, fk))
+
+        for new_fk in new_fk_fields - old_fk_fields:
+            print(f'new fk: {new_fk.raw_field}')
+            upgrade_operations.append(AddFK(
                 table_name=new_table.table,
-                field_names=new_unique,
-                unique=True,
+                field_name=new_fk.raw_field,
+                on_delete=new_fk.on_delete,
+                related_model_name=new_fk.description,
+                related_field_name=new_fk.raw_field,
+                nullable=new_fk.nullable,
+                unique=new_fk.unique,
+                default=new_fk.default,
+                comment=new_fk.description,
             ))
-            downgrade_operations.append(DropIndex(
+            downgrade_operations.append(DropFK(
                 table_name=new_table.table,
-                field_names=new_unique,
-                unique=True,
+                field_name=new_fk.raw_field,
             ))
-        for old_unique in set(old_table.unique_together) - set(new_table.unique_together):
-            print(f'removed unique: {old_unique}')
-            upgrade_operations.append(DropIndex(
-                table_name=new_table.table,
-                field_names=old_unique,
-                unique=True,
+        for old_fk in old_fk_fields - new_fk_fields:
+            print(f'removed fk: {old_fk.raw_field}')
+            upgrade_operations.append(DropFK(
+                table_name=old_table.table,
+                field_name=old_fk.raw_field,
             ))
-            downgrade_operations.append(AddIndex(
-                table_name=new_table.table,
-                field_names=old_unique,
-                unique=True,
+            downgrade_operations.append(AddFK(
+                table_name=old_table.table,
+                field_name=old_fk.raw_field,
+                on_delete=old_fk.on_delete,
+                related_model_name=old_fk.description,
+                related_field_name=old_fk.raw_field,
+                nullable=old_fk.nullable,
+                unique=old_fk.unique,
+                default=old_fk.default,
+                comment=old_fk.description,
             ))
 
-        # TODO: indexes, fk, m2m
+    # TODO: indexes, m2m, o2o
 
     return upgrade_operations, downgrade_operations
 
@@ -418,9 +507,6 @@ def compare_fields(
         pass
     elif not old_field and new_field:
         print(f'  new field: {new_field.db_column}')
-        default = new_field.default
-        if isinstance(default, str) and default.startswith("<function "):
-            default = None
         upgrade_operations.append(convert_tortoise_field(table_name, new_field))
         downgrade_operations.append(RemoveField(table_name=table_name, field_name=new_field.name))
     elif old_field and not new_field:
@@ -430,6 +516,30 @@ def compare_fields(
     else:
         # TODO: alter column
         print(f'  same field: {new_field.db_column}')
+    return upgrade_operations, downgrade_operations
+
+
+def compare_fk_fields(
+    table_name: str,
+    old_field: Optional[TortoiseFkDescribe],
+    new_field: Optional[TortoiseFkDescribe],
+) -> tuple[list[Operation], list[Operation]]:
+    upgrade_operations = []
+    downgrade_operations = []
+
+    if not old_field and not new_field:
+        pass
+    elif not old_field and new_field:
+        print(f'  new fk field: {new_field.raw_field}')
+        upgrade_operations.append(convert_tortoise_fk(table_name, new_field))
+        downgrade_operations.append(DropFK(table_name=table_name, field_name=new_field.name))
+    elif old_field and not new_field:
+        print(f'  removed fk field: {old_field.raw_field}')
+        upgrade_operations.append(DropFK(table_name=table_name, field_name=old_field.name))
+        downgrade_operations.append(convert_tortoise_fk(table_name, old_field))
+    else:
+        # TODO: alter fk
+        print(f'  same field: {new_field.raw_field}')
     return upgrade_operations, downgrade_operations
 
 
